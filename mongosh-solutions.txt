@@ -1,0 +1,144 @@
+// Assignment 7 - complete Mongosh solution (Q01-Q19)
+// Run from assignment7/: mongosh "mongodb://127.0.0.1:27017" --file ".\\mongosh-solutions.txt"
+// Uses only the dedicated assignment7_mongosh database. It never drops a database.
+// Re-running reuses the demo records; Q15 still performs its required year < 2000 deletion.
+const assignmentDb = db.getSiblingDB('assignment7_mongosh');
+const books = assignmentDb.getCollection('books');
+const authors = assignmentDb.getCollection('authors');
+const logs = assignmentDb.getCollection('logs');
+
+// Q01 - Explicit books collection with a strict, non-whitespace title validator.
+const titleValidator = {
+  $jsonSchema: {
+    bsonType: 'object',
+    required: ['title'],
+    properties: { title: { bsonType: 'string', minLength: 1, pattern: '\\S' } }
+  }
+};
+if (!assignmentDb.getCollectionInfos({ name: 'books' }).length) {
+  printjson(assignmentDb.createCollection('books', {
+    validator: titleValidator,
+    validationLevel: 'strict',
+    validationAction: 'error'
+  }));
+} else {
+  printjson(assignmentDb.runCommand({
+    collMod: 'books',
+    validator: titleValidator,
+    validationLevel: 'strict',
+    validationAction: 'error'
+  }));
+}
+
+// Q02 - insertOne implicitly creates authors. Reuse the same demo author on reruns.
+const authorDocument = { name: 'Author1', nationality: 'British' };
+if (!authors.findOne(authorDocument)) {
+  printjson(authors.insertOne(authorDocument));
+} else {
+  print('Q02 Author1 already exists; no duplicate inserted.');
+}
+
+// Q03 - Explicit 1 MiB capped logs collection; verify its capped state and size.
+if (!assignmentDb.getCollectionInfos({ name: 'logs' }).length) {
+  printjson(assignmentDb.createCollection('logs', { capped: true, size: 1024 * 1024 }));
+}
+const logsInfo = assignmentDb.getCollectionInfos({ name: 'logs' })[0];
+if (!logs.isCapped() || logsInfo.options.size !== 1048576) {
+  throw new Error('The existing logs collection is not capped at exactly 1048576 bytes. It was left unchanged.');
+}
+print('Q03 isCapped: ' + logs.isCapped());
+printjson(assignmentDb.runCommand({ listCollections: 1, filter: { name: 'logs' } }));
+
+// Q04 - ascending title index; createIndex is safe to repeat for the same key/name.
+print('Q04 index: ' + books.createIndex({ title: 1 }));
+
+// Q05 - insert one real book document. Avoid a duplicate when rerunning the demo.
+const firstBook = { title: 'Book', author: 'Ali', year: Int32(1937), genres: ['Fantasy', 'Adventure'] };
+if (!books.findOne({ title: firstBook.title })) {
+  printjson(books.insertOne(firstBook));
+} else {
+  print('Q05 Book already exists; no duplicate inserted.');
+}
+
+// Q06 - one insertMany call for all missing sample records; on a clean DB this inserts all ten.
+const sampleBooks = [
+  { title: 'Future', author: 'George Orwell', year: Int32(2020), genres: ['Science Fiction'] },
+  { title: 'To Kill a Mockingbird', author: 'Harper Lee', year: Int32(1960), genres: ['Classic', 'Fiction'] },
+  { title: 'Brave New World', author: 'Aldous Huxley', year: Int32(2006), genres: ['Dystopian', 'Science Fiction'] },
+  { title: 'The Road', author: 'Cormac McCarthy', year: Int32(2006), genres: ['Dystopian', 'Fiction'] },
+  { title: 'The Kite Runner', author: 'Khaled Hosseini', year: Int32(2003), genres: ['Fiction', 'Drama'] },
+  { title: 'The Hobbit', author: 'J. R. R. Tolkien', year: Int32(1937), genres: ['Fantasy', 'Adventure'] },
+  { title: 'Pride and Prejudice', author: 'Jane Austen', year: Int32(1813), genres: ['Romance', 'Classic'] },
+  { title: 'The Great Gatsby', author: 'F. Scott Fitzgerald', year: Int32(1925), genres: ['Classic', 'Fiction'] },
+  { title: 'Moby Dick', author: 'Herman Melville', year: Int32(1851), genres: ['Adventure', 'Classic'] },
+  { title: 'War and Peace', author: 'Leo Tolstoy', year: Int32(1869), genres: ['Historical Fiction', 'Philosophy'] }
+];
+const missingSampleBooks = sampleBooks.filter((book) => !books.findOne({ title: book.title }));
+if (missingSampleBooks.length) {
+  printjson(books.insertMany(missingSampleBooks));
+  print('Q06 inserted missing sample books: ' + missingSampleBooks.length);
+} else {
+  print('Q06 all ten sample books already exist; no duplicates inserted.');
+}
+
+// Q07 - use the actual ObjectId from the stored Future book; book_id remains BSON ObjectId.
+const futureBook = books.findOne({ title: 'Future' });
+if (!futureBook) throw new Error('Q06 did not create or find the Future book.');
+const futureBookId = futureBook._id;
+print('Q07 linked Future _id: ' + futureBookId.toString());
+if (!logs.findOne({ book_id: futureBookId, action: 'borrowed' })) {
+  printjson(logs.insertOne({ book_id: futureBookId, action: 'borrowed' }));
+} else {
+  print('Q07 borrowed log for Future already exists; no duplicate inserted.');
+}
+
+// Q08 - updateOne the exact title Future to year 2022.
+printjson(books.updateOne({ title: 'Future' }, { $set: { year: Int32(2022) } }));
+
+// Q09 - findOne by exact title.
+printjson(books.findOne({ title: 'Brave New World' }));
+
+// Q10 - inclusive year range.
+printjson(books.find({ year: { $gte: Int32(1990), $lte: Int32(2010) } }).toArray());
+
+// Q11 - genres array contains the requested value.
+printjson(books.find({ genres: 'Science Fiction' }).toArray());
+
+// Q12 - sort descending, skip two, then take the next three.
+printjson(books.find({}).sort({ year: -1 }).skip(2).limit(3).toArray());
+
+// Q13 - BSON Int32 only; all sample years above are explicitly Int32 values.
+printjson(books.find({ year: { $type: 'int' } }).toArray());
+
+// Q14 - genres exists and excludes both forbidden genre values.
+printjson(books.find({ genres: { $exists: true, $nin: ['Horror', 'Science Fiction'] } }).toArray());
+
+// Q15 - required deletion: remove books with year < 2000 from this demo database.
+printjson(books.deleteMany({ year: { $lt: Int32(2000) } }));
+
+// Q16 - aggregation: books after 2000, sorted by descending year.
+printjson(books.aggregate([
+  { $match: { year: { $gt: Int32(2000) } } },
+  { $sort: { year: -1 } }
+]).toArray());
+
+// Q17 - aggregation: only title, author, and year; exclude _id.
+printjson(books.aggregate([
+  { $match: { year: { $gt: Int32(2000) } } },
+  { $project: { _id: 0, title: 1, author: 1, year: 1 } }
+]).toArray());
+
+// Q18 - aggregation: one output document for each element of genres.
+printjson(books.aggregate([
+  { $unwind: '$genres' },
+  { $project: { _id: 0, title: 1, genres: 1 } }
+]).toArray());
+
+// Q19 - join logs to books. Both sides use ObjectId; Future remains after Q15.
+const lookupResults = logs.aggregate([
+  { $lookup: { from: 'books', localField: 'book_id', foreignField: '_id', as: 'book_details' } }
+]).toArray();
+if (!lookupResults.some((log) => log.book_details.some((book) => book.title === 'Future'))) {
+  throw new Error('Q19 lookup did not find the Future book. Check that book_id is an ObjectId and Future exists.');
+}
+printjson(lookupResults);
